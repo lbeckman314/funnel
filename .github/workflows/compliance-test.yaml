@@ -41,11 +41,17 @@ jobs:
         path: funnel
 
   complianceTest:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
         with:
           repository: 'elixir-cloud-aai/tes-compliance-suite'
+
+      # Development debug session
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+
       - name: Start Funnel server
         run: |
           funnel server run
@@ -54,6 +60,3 @@ jobs:
           python setup.py install
           tes-compliance-suite report --server "http://localhost:8000/"
 
-      # Development debug session
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
