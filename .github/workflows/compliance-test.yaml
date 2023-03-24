@@ -58,9 +58,19 @@ jobs:
 
       - name: Start Funnel server
         run: |
-          funnel server run
+          ./funnel server run &
       - run: |
-          cd tes-compliance-suite  
+          python -m venv venv
+          . venv/bin/activate
           python setup.py install
-          tes-compliance-suite report --server "http://localhost:8000/"
 
+          mkdir report-v1.0
+          mkdir report-v1.1
+          tes-compliance-suite report --version "1.0.0" --server "http://localhost:8000/" -o report-v1.0
+          tes-compliance-suite report --version "1.1.0" --server "http://localhost:8000/" -o report-v1.1
+
+      - name: Store reports
+        uses: actions/upload-artifact@v2
+        with:
+          name: reports
+          path: report-v*
