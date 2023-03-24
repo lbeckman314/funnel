@@ -48,6 +48,10 @@ jobs:
         with:
           repository: 'elixir-cloud-aai/tes-compliance-suite'
 
+      - uses: actions/download-artifact@v3
+        with:
+          name: funnelBin
+
       # Development debug session
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
