@@ -56,14 +56,19 @@ jobs:
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
 
-      - name: Start Funnel server
+      - name: Install TES compliance suite
         run: |
-          ./funnel server run &
-      - run: |
           python -m venv venv
           . venv/bin/activate
           python setup.py install
 
+      - name: Start Funnel server
+        run: |
+          chmod +x funnel
+          ./funnel server run &> funnel.logs &
+
+      - name: Start Reports
+        run: |
           mkdir report-v1.0
           mkdir report-v1.1
           tes-compliance-suite report --version "1.0.0" --server "http://localhost:8000/" -o report-v1.0
