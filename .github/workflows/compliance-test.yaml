@@ -52,10 +52,6 @@ jobs:
         with:
           name: funnelBin
 
-      # Development debug session
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
-
       - name: Install TES compliance suite
         run: |
           python -m venv venv
