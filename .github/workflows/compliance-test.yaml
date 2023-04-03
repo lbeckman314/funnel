@@ -63,6 +63,9 @@ jobs:
           chmod +x funnel
           ./funnel server run &> funnel.logs &
 
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+
       - name: Start Reports
         run: |
           mkdir report-v1.0
