@@ -70,6 +70,7 @@ jobs:
         run: |
           mkdir report-v1.0
           mkdir report-v1.1
+          . venv/bin/activate
           tes-compliance-suite report --version "1.0.0" --server "http://localhost:8000/" -o report-v1.0
           tes-compliance-suite report --version "1.1.0" --server "http://localhost:8000/" -o report-v1.1
 
