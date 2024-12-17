@@ -8,7 +8,7 @@ WORKDIR /go/src/github.com/ohsu-comp-bio/funnel
 COPY go.* .
 RUN go mod download
 COPY . .
-RUN --mount=type=cache,target=/root/.cache/go-build make build
+RUN make build
 
 # final stage
 FROM alpine
