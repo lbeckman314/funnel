@@ -1,6 +1,7 @@
 # build stage
 FROM golang:1.22-alpine AS build-env
 RUN apk add make git bash build-base
+RUN apk add --no-cache docker
 ENV GOPATH=/go
 ENV PATH="/go/bin:${PATH}"
 ADD ./ /go/src/github.com/ohsu-comp-bio/funnel
