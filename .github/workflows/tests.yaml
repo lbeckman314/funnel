@@ -44,6 +44,8 @@ jobs:
       run: go install gotest.tools/gotestsum@v1.13.0
 
     - name: Unit Tests
+      id: unit_tests
+      continue-on-error: true
       run: |
         gotestsum --junitfile=test-report.xml -- ./... -coverprofile=coverage.out
         go tool cover -func=coverage.out
@@ -55,3 +57,7 @@ jobs:
         name: Unit Test Results
         path: test-report.xml
         reporter: java-junit
+
+    - name: Fail job if tests failed
+      if: steps.unit_tests.outcome == 'failure'
+      run: exit 1
