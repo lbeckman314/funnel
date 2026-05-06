@@ -3,6 +3,7 @@ package kubernetes
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -10,9 +11,12 @@ import (
 	"github.com/ohsu-comp-bio/funnel/events"
 	"github.com/ohsu-comp-bio/funnel/logger"
 	"github.com/ohsu-comp-bio/funnel/tes"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 // noopEventWriter implements events.Writer for testing.
@@ -254,5 +258,85 @@ spec:
 	}
 	if gotTol.Value != "worker" {
 		t.Fatalf("unexpected toleration value: got=%q want=%q", gotTol.Value, "worker")
+	}
+}
+
+// TestCancel_SAInUse verifies that Cancel succeeds even when the task's
+// ServiceAccount is still attached to a running pod (the foreground-deleted
+// Job's pod hasn't terminated yet). The SA should be left in place and not
+// cause Cancel to return an error.
+func TestCancel_SAInUse(t *testing.T) {
+	const taskID = "cancel-test-task"
+	const ns = "test-namespace"
+
+	fakeClient := fake.NewSimpleClientset()
+	ctx := context.Background()
+
+	// Pre-create a worker Job so DeleteJob has something to delete.
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: taskID, Namespace: ns},
+	}
+	if _, err := fakeClient.BatchV1().Jobs(ns).Create(ctx, job, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+
+	saName := fmt.Sprintf("funnel-worker-sa-%s-%s", ns, taskID)
+
+	// Pre-create the SA with the label DeleteServiceAccount queries by.
+	sa := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      saName,
+			Namespace: ns,
+			Labels:    map[string]string{"app": "funnel", "taskId": taskID},
+		},
+	}
+	if _, err := fakeClient.CoreV1().ServiceAccounts(ns).Create(ctx, sa, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("creating SA: %v", err)
+	}
+
+	// Simulate a still-running worker pod attached to the SA (the situation
+	// that arises immediately after foreground Job deletion).
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: taskID + "-pod", Namespace: ns},
+		Spec:       corev1.PodSpec{ServiceAccountName: saName},
+	}
+	if _, err := fakeClient.CoreV1().Pods(ns).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("creating pod: %v", err)
+	}
+
+	// fake.NewSimpleClientset doesn't enforce field selectors, so we inject a
+	// reactor that returns the pod when isServiceAccountAttachedToPods queries
+	// by spec.serviceAccountName, ensuring the in-use path is exercised.
+	fakeClient.PrependReactor("list", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, &corev1.PodList{Items: []corev1.Pod{*pod}}, nil
+	})
+
+	conf := config.DefaultConfig()
+	conf.Kubernetes.Namespace = ns
+	conf.Kubernetes.JobsNamespace = ns
+	conf.Kubernetes.WorkerTemplate = "placeholder"
+
+	backend := &Backend{
+		client: fakeClient,
+		log:    logger.NewLogger("test", logger.DefaultConfig()),
+		conf:   conf,
+		event:  &noopEventWriter{},
+	}
+
+	// Cancel must succeed even though the SA is still in use.
+	if err := backend.Cancel(ctx, taskID); err != nil {
+		t.Fatalf("Cancel returned unexpected error: %v", err)
+	}
+
+	// Job should be gone.
+	_, err := fakeClient.BatchV1().Jobs(ns).Get(ctx, taskID, metav1.GetOptions{})
+	if err == nil {
+		t.Error("expected Job to be deleted after Cancel")
+	}
+
+	// SA must still exist — it was skipped, not deleted.
+	_, err = fakeClient.CoreV1().ServiceAccounts(ns).Get(ctx, saName, metav1.GetOptions{})
+	if err != nil {
+		t.Errorf("expected SA to remain while pod is still running, got: %v", err)
 	}
 }

@@ -420,13 +420,14 @@ func TestDeleteServiceAccountInUse(t *testing.T) {
 	}
 
 	err = DeleteServiceAccount(context.Background(), testTaskID, namespace, fakeClient, l, false)
-	if err == nil {
-		t.Fatal("expected DeleteServiceAccount to fail when ServiceAccount is in use")
+	if err != nil {
+		t.Fatalf("expected DeleteServiceAccount to succeed (skip) when ServiceAccount is in use, got error: %v", err)
 	}
 
+	// SA must still exist — it was skipped, not deleted.
 	_, err = fakeClient.CoreV1().ServiceAccounts(namespace).Get(context.Background(), sa.Name, metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("expected ServiceAccount to remain after failed delete: %v", err)
+		t.Fatalf("expected ServiceAccount to remain when still in use: %v", err)
 	}
 }
 
