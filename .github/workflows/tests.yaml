@@ -29,6 +29,8 @@ jobs:
 
   unitTest:
     runs-on: ubuntu-latest
+    permissions:
+      checks: write
     steps:
     - name: Check out code
       uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -38,7 +40,18 @@ jobs:
       with:
         go-version-file: go.mod
 
+    - name: Install gotestsum
+      run: go install gotest.tools/gotestsum@v1.13.0
+
     - name: Unit Tests
       run: |
-        go test -v ./... -coverprofile=coverage.out
+        gotestsum --junitfile=test-report.xml -- ./... -coverprofile=coverage.out
         go tool cover -func=coverage.out
+
+    - name: Test Report
+      uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3
+      if: always()
+      with:
+        name: Unit Test Results
+        path: test-report.xml
+        reporter: java-junit
