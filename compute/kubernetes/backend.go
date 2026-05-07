@@ -420,7 +420,6 @@ func (b *Backend) reconcile(ctx context.Context, rate time.Duration, disableClea
 					}
 				}
 			}
-			b.CleanOrphanedResources(ctx)
 		}
 	}
 
@@ -576,6 +575,7 @@ func (b *Backend) reconcile(ctx context.Context, rate time.Duration, disableClea
 					delete(failedJobEvents, taskID)
 				}
 			}
+			b.CleanOrphanedResources(ctx)
 		}
 	}
 }
@@ -602,6 +602,7 @@ func (b *Backend) isResourceCleanupNeeded(ctx context.Context, taskID string) (b
 // than as a long-running goroutine, so that cleanup is decoupled from the Funnel server lifecycle
 // and multiple server replicas do not race to clean the same resources simultaneously.
 func (b *Backend) CleanOrphanedResources(ctx context.Context) {
+	b.log.Info("starting orphaned resource cleanup")
 	namespace := b.conf.Kubernetes.JobsNamespace
 	taskIDs := make(map[string]struct{})
 
