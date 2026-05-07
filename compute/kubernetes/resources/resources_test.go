@@ -257,7 +257,7 @@ func TestDeletePV(t *testing.T) {
 		t.Fatalf("Failed to create test PV: %v", err)
 	}
 
-	err = DeletePV(context.Background(), testTaskID, fakeClient, l)
+	err = DeletePV(context.Background(), testTaskID, jobsNamespace, fakeClient, l)
 	if err != nil {
 		t.Errorf("DeletePV failed: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestDeleteNonExistentResources(t *testing.T) {
 
 	// DeletePV and DeletePVC are no-ops when the resource doesn't exist.
 	t.Run("PV", func(t *testing.T) {
-		err := DeletePV(context.Background(), nonExistentID, fakeClient, l)
+		err := DeletePV(context.Background(), nonExistentID, jobsNamespace, fakeClient, l)
 		if err != nil {
 			t.Errorf("DeletePV returned unexpected error for non-existent resource: %v", err)
 		}

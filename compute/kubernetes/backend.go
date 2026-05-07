@@ -331,6 +331,12 @@ func (b *Backend) cleanResources(ctx context.Context, taskId string) error {
 		b.log.Error("deleting Worker Role", "error", err)
 	}
 
+	// Delete PV
+	err = resources.DeletePV(ctx, taskId, b.conf.Kubernetes.JobsNamespace, b.client, b.log)
+	if err != nil {
+		errs = multierror.Append(errs, err)
+		b.log.Error("deleting Worker PV", "error", err)
+	}
 	return errs
 }
 
