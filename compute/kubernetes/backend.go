@@ -190,54 +190,68 @@ func (b *Backend) createResources(ctx context.Context, task *tes.Task, config *c
 		Controller:         &isController,
 	}
 
-	b.log.Debug("creating Worker ConfigMap", "taskID", task.Id)
-	err = resources.CreateConfigMap(timeoutCtx, task.Id, config, b.client, b.log, ownerRef)
-	if err != nil {
-		_ = b.Cancel(context.Background(), task.Id)
-		return fmt.Errorf("creating Worker ConfigMap: %w", err)
-	}
-
-	saName := fmt.Sprintf("funnel-worker-sa-%s-%s", config.Kubernetes.JobsNamespace, task.Id)
-	externalSA := false
-	if sa, exists := task.Tags["_WORKER_SA"]; exists && sa != "" {
-		saName = sa
-		externalSA = true
-	}
-
-	// TODO: Add error handler to handle case where Get fails for reasons other than `NotFound`
-	// e.g. network issues, permission issues, etc.
-	_, err = b.client.CoreV1().ServiceAccounts(config.Kubernetes.JobsNamespace).Get(timeoutCtx, saName, metav1.GetOptions{})
-
-	// ServiceAccount does not exist, create it
-	if err != nil {
-		b.log.Debug("Error getting ServiceAccount:", "ServiceAccount", saName, "taskID", task.Id, "error", err)
-		b.log.Debug("Creating Worker ServiceAccount", "taskID", task.Id)
-		// Only set the owner reference for task-level SAs; external SAs are shared and must not be GC'd with the job.
-		saOwnerRef := ownerRef
-		if externalSA {
-			saOwnerRef = nil
-		}
-		err = resources.CreateServiceAccount(timeoutCtx, task, config, b.client, b.log, saOwnerRef)
+	// Create ConfigMap (only when a template is configured; deployments using a
+	// static shared ConfigMap via the WorkerTemplate volume spec skip this).
+	if config.Kubernetes.ConfigMapTemplate != "" {
+		b.log.Debug("creating Worker ConfigMap", "taskID", task.Id)
+		err = resources.CreateConfigMap(timeoutCtx, task.Id, config, b.client, b.log, ownerRef)
 		if err != nil {
 			_ = b.Cancel(context.Background(), task.Id)
-			return fmt.Errorf("creating Worker ServiceAccount: %w", err)
+			return fmt.Errorf("creating Worker ConfigMap: %w", err)
 		}
-	} else {
-		b.log.Debug("ServiceAccount already exists, skipping creation", "ServiceAccount", saName, "taskID", task.Id)
 	}
 
-	b.log.Debug("creating Worker Role", "taskID", task.Id)
-	err = resources.CreateRole(timeoutCtx, task, config, b.client, b.log, ownerRef)
-	if err != nil {
-		_ = b.Cancel(context.Background(), task.Id)
-		return fmt.Errorf("creating Worker Role: %w", err)
+	// Create ServiceAccount, Role, and RoleBinding only when templates are
+	// configured. Deployments that supply a pre-existing shared SA (e.g. via
+	// _WORKER_SA tag or a static Helm-managed SA) skip these steps entirely.
+	// External (user-managed) SAs are not owned by the Job — they outlive tasks.
+	if config.Kubernetes.ServiceAccountTemplate != "" {
+		saName := fmt.Sprintf("funnel-worker-sa-%s-%s", config.Kubernetes.JobsNamespace, task.Id)
+		externalSA := false
+		if sa, exists := task.Tags["_WORKER_SA"]; exists && sa != "" {
+			saName = sa
+			externalSA = true
+		}
+
+		// TODO: Add error handler to handle case where Get fails for reasons other than `NotFound`
+		// e.g. network issues, permission issues, etc.
+		_, err = b.client.CoreV1().ServiceAccounts(config.Kubernetes.JobsNamespace).Get(timeoutCtx, saName, metav1.GetOptions{})
+
+		// ServiceAccount does not exist, create it
+		if err != nil {
+			b.log.Debug("Error getting ServiceAccount:", "ServiceAccount", saName, "taskID", task.Id, "error", err)
+			b.log.Debug("Creating Worker ServiceAccount", "taskID", task.Id)
+			// Only set the owner reference for task-level SAs; external SAs are shared and must not be GC'd with the job.
+			saOwnerRef := ownerRef
+			if externalSA {
+				saOwnerRef = nil
+			}
+			err = resources.CreateServiceAccount(timeoutCtx, task, config, b.client, b.log, saOwnerRef)
+			if err != nil {
+				_ = b.Cancel(context.Background(), task.Id)
+				return fmt.Errorf("creating Worker ServiceAccount: %w", err)
+			}
+		} else {
+			b.log.Debug("ServiceAccount already exists, skipping creation", "ServiceAccount", saName, "taskID", task.Id)
+		}
 	}
 
-	b.log.Debug("creating Worker RoleBinding", "taskID", task.Id)
-	err = resources.CreateRoleBinding(timeoutCtx, task, config, b.client, b.log, ownerRef)
-	if err != nil {
-		_ = b.Cancel(context.Background(), task.Id)
-		return fmt.Errorf("creating Worker RoleBinding: %w", err)
+	if config.Kubernetes.RoleTemplate != "" {
+		b.log.Debug("creating Worker Role", "taskID", task.Id)
+		err = resources.CreateRole(timeoutCtx, task, config, b.client, b.log, ownerRef)
+		if err != nil {
+			_ = b.Cancel(context.Background(), task.Id)
+			return fmt.Errorf("creating Worker Role: %w", err)
+		}
+	}
+
+	if config.Kubernetes.RoleBindingTemplate != "" {
+		b.log.Debug("creating Worker RoleBinding", "taskID", task.Id)
+		err = resources.CreateRoleBinding(timeoutCtx, task, config, b.client, b.log, ownerRef)
+		if err != nil {
+			_ = b.Cancel(context.Background(), task.Id)
+			return fmt.Errorf("creating Worker RoleBinding: %w", err)
+		}
 	}
 
 	// If the task has inputs, outputs, or declared volumes, create a PVC so
@@ -368,6 +382,209 @@ func (b *Backend) isJobSchedulingTimedOut(ctx context.Context, jobName string, t
 		}
 	}
 	return false
+}
+
+// cleanResourcesIfEnabled deletes resources for a job unless cleanup has been
+// disabled (e.g. for debugging or dry-run modes). Always clears the job from
+// failedJobEvents regardless, since the job has reached a terminal state.
+func (b *Backend) cleanResourcesIfEnabled(ctx context.Context, jobName string, disableCleanup bool, failedJobEvents map[string]int) {
+	delete(failedJobEvents, jobName)
+	if disableCleanup {
+		return
+	}
+	if err := b.cleanResources(ctx, jobName); err != nil {
+		b.log.Error("reconcile: failed to clean resources", "taskID", jobName, "error", err)
+	}
+}
+
+// listActiveK8sJobs returns a map of taskID -> Job for all funnel-worker jobs.
+func (b *Backend) listActiveK8sJobs(ctx context.Context) (map[string]*v1.Job, error) {
+	jobs, err := b.client.BatchV1().Jobs(b.conf.Kubernetes.JobsNamespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app=funnel-worker",
+	})
+	if err != nil {
+		return nil, err
+	}
+	k8sJobs := make(map[string]*v1.Job, len(jobs.Items))
+	for i := range jobs.Items {
+		k8sJobs[jobs.Items[i].Name] = &jobs.Items[i]
+	}
+	return k8sJobs, nil
+}
+
+// cleanBacklog clears completed and orphaned jobs left over from a previous
+// server run. Called once at startup.
+func (b *Backend) cleanBacklog(ctx context.Context) {
+	k8sJobs, err := b.listActiveK8sJobs(ctx)
+	if err != nil {
+		b.log.Error("backlog cleanup: listing jobs", err)
+		return
+	}
+
+	// Determine stale jobs and clean up resources. Stale jobs include:
+	//   1. Completed jobs (Succeeded/Failed) that were not cleaned up before the server restarted.
+	//   2. Orphaned jobs (Active) whose task no longer exists in the Funnel DB — left over from a previous deployment or server crash.
+	for taskID, j := range k8sJobs {
+		s := j.Status
+
+		if s.Succeeded > 0 || s.Failed > 0 {
+			b.log.Debug("backlog cleanup: deleting completed job", "taskID", taskID)
+			if err := b.cleanResources(ctx, taskID); err != nil {
+				b.log.Error("backlog cleanup: failed to clean resources", "taskID", taskID, "error", err)
+			}
+			continue
+		}
+
+		if s.Active > 0 {
+			_, err := b.database.GetTask(ctx, &tes.GetTaskRequest{Id: taskID, View: tes.View_MINIMAL.String()})
+			if err != nil {
+				b.log.Info("backlog cleanup: deleting orphaned active job with no matching task", "taskID", taskID)
+				if err := b.cleanResources(ctx, taskID); err != nil {
+					b.log.Error("backlog cleanup: failed to clean orphaned resources", "taskID", taskID, "error", err)
+				}
+			}
+		}
+	}
+
+	// In case there are any orphaned resources that were missed by the above loop (e.g. due to a transient DB error),
+	// do one final sweep of all resources with no matching task.
+	b.CleanOrphanedResources(ctx)
+}
+
+// reconcileOnce performs a single reconciliation pass.
+func (b *Backend) reconcileOnce(ctx context.Context, disableCleanup bool, failedJobEvents map[string]int) {
+	if failedJobEvents == nil {
+		failedJobEvents = make(map[string]int)
+	}
+
+	k8sJobs, err := b.listActiveK8sJobs(ctx)
+	if err != nil {
+		b.log.Error("reconcile: listing jobs", err)
+		return
+	}
+
+	nonTerminalStates := []tes.State{tes.State_QUEUED, tes.State_INITIALIZING, tes.State_RUNNING}
+	for _, state := range nonTerminalStates {
+		if err := b.reconcileTasksForState(ctx, state, k8sJobs, disableCleanup, failedJobEvents); err != nil {
+			b.log.Error("reconcile: error reconciling tasks", "state", state, "error", err)
+		}
+	}
+
+	// Any jobs still in k8sJobs were not matched to any Funnel task — orphaned.
+	if !disableCleanup {
+		for taskID := range k8sJobs {
+			b.log.Info("reconcile: cleaning up orphaned job with no matching Funnel task", "taskID", taskID)
+			if err := b.cleanResources(ctx, taskID); err != nil {
+				b.log.Error("reconcile: failed to clean orphaned resources", "taskID", taskID, "error", err)
+			}
+			delete(failedJobEvents, taskID)
+		}
+	}
+
+}
+
+// reconcileTasksForState pages through all Funnel tasks in a given state and
+// reconciles each against its corresponding K8s Job, removing matched jobs
+// from k8sJobs so that any remainder can be identified as orphaned.
+func (b *Backend) reconcileTasksForState(ctx context.Context, state tes.State, k8sJobs map[string]*v1.Job, disableCleanup bool, failedJobEvents map[string]int) error {
+	pageToken := ""
+	for {
+		lresp, err := b.database.ListTasks(ctx, &tes.ListTasksRequest{
+			State:     state,
+			PageSize:  100,
+			PageToken: pageToken,
+		})
+		if err != nil {
+			return fmt.Errorf("listing tasks (state=%s): %w", state, err)
+		}
+
+		for _, task := range lresp.Tasks {
+			j, exists := k8sJobs[task.Id]
+			delete(k8sJobs, task.Id) // matched — remove so it isn't treated as orphaned
+			if exists {
+				b.reconcileJob(ctx, j, disableCleanup, failedJobEvents)
+			}
+		}
+
+		pageToken = lresp.NextPageToken
+		if pageToken == "" {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// reconcileJob reconciles a single K8s Job against its Funnel task state.
+func (b *Backend) reconcileJob(ctx context.Context, j *v1.Job, disableCleanup bool, failedJobEvents map[string]int) {
+	jobName := j.Name
+	status := j.Status
+	const maxErrEventWrites = 2
+
+	switch {
+	case status.Active > 0:
+		// If any pod is stuck in active state for longer than the scheduling timeout,
+		// write a SystemError event and clean up resources if enabled.
+		if b.conf.Kubernetes.Timeout.GetDuration() == nil {
+			return
+		}
+		timeout := b.conf.Kubernetes.Timeout.GetDuration().AsDuration()
+		if !b.isJobSchedulingTimedOut(ctx, jobName, timeout) {
+			return
+		}
+		b.log.Debug("reconcile: worker pod scheduling timed out", "taskID", jobName)
+		b.event.WriteEvent(ctx, events.NewState(jobName, tes.SystemError))
+		b.event.WriteEvent(ctx, events.NewSystemLog(
+			jobName, 0, 0, "error",
+			"Kubernetes job in FAILED state",
+			map[string]string{"error": "worker pod scheduling timed out"},
+		))
+		b.cleanResourcesIfEnabled(ctx, jobName, disableCleanup, failedJobEvents)
+
+	case status.Succeeded > 0:
+		b.log.Debug("reconcile: cleaning up successful job", "taskID", jobName)
+		b.cleanResourcesIfEnabled(ctx, jobName, disableCleanup, failedJobEvents)
+
+	case status.Failed > 0:
+		if failedJobEvents[jobName] >= maxErrEventWrites {
+			return
+		}
+		b.log.Debug("reconcile: writing system error event for failed job", "taskID", jobName)
+		conds, err := json.Marshal(status.Conditions)
+		if err != nil {
+			b.log.Error("reconcile: marshal failed job conditions", "taskID", jobName, "error", err)
+		}
+		b.event.WriteEvent(ctx, events.NewState(jobName, tes.SystemError))
+		b.event.WriteEvent(ctx, events.NewSystemLog(
+			jobName, 0, 0, "error",
+			"Kubernetes job in FAILED state",
+			map[string]string{"error": string(conds)},
+		))
+		failedJobEvents[jobName]++
+		b.cleanResourcesIfEnabled(ctx, jobName, disableCleanup, failedJobEvents)
+	}
+}
+
+// reconcile is the ticker-based loop used when ExternalReconciler is false.
+func (b *Backend) reconcile_modular(ctx context.Context, rate time.Duration, disableCleanup bool) {
+	if !disableCleanup {
+		b.cleanBacklog(ctx)
+	}
+
+	ticker := time.NewTicker(rate)
+	defer ticker.Stop()
+
+	// failedJobEvents tracks how many times we've written a SystemError event
+	// for a given job, so we don't spam events on every tick.
+	failedJobEvents := make(map[string]int)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.reconcileOnce(ctx, disableCleanup, failedJobEvents)
+		}
+	}
 }
 
 // Reconcile loops through tasks and checks the status from Funnel's database
