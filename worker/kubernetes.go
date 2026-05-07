@@ -116,7 +116,6 @@ func (kcmd KubernetesCommand) Run(ctx context.Context) error {
 	// string) or when stdio redirects are present.
 	useShell := len(cmd) == 1 || hasRedirects
 
-	logger.Debug("Printing kcmd Volumes ", kcmd.Volumes)
 	templateData := map[string]interface{}{
 		"TaskId":             taskId,
 		"JobId":              kcmd.JobId,

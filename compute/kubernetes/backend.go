@@ -384,6 +384,7 @@ func (b *Backend) isJobSchedulingTimedOut(ctx context.Context, jobName string, t
 	return false
 }
 
+/***********[WIP] Attempt to refactor reconcile loop into smaller functions for better readability and testability ***********/
 // cleanResourcesIfEnabled deletes resources for a job unless cleanup has been
 // disabled (e.g. for debugging or dry-run modes). Always clears the job from
 // failedJobEvents regardless, since the job has reached a terminal state.
@@ -586,6 +587,8 @@ func (b *Backend) reconcile_modular(ctx context.Context, rate time.Duration, dis
 		}
 	}
 }
+
+/******************************** End of refactor attempt [WIP] ********************************/
 
 // Reconcile loops through tasks and checks the status from Funnel's database
 // against the status reported by Kubernetes. This allows the backend to report
