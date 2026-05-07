@@ -41,7 +41,7 @@ func CreateConfigMap(ctx context.Context, taskId string, conf *config.Config, cl
 	if err != nil {
 		return fmt.Errorf("executing ConfigMapTemplate: %v", err)
 	}
-
+	log.Debug("rendered ConfigMap template", "taskID", taskId, "configMap", buf.String())
 	decode := scheme.Codecs.UniversalDeserializer().Decode
 	obj, _, err := decode(buf.Bytes(), nil, nil)
 	if err != nil {
