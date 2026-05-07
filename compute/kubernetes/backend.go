@@ -274,18 +274,6 @@ func (b *Backend) createResources(ctx context.Context, task *tes.Task, config *c
 func (b *Backend) cleanResources(ctx context.Context, taskId string) error {
 	var errs error
 
-	// Check whether this task used an externally-managed ServiceAccount (e.g.
-	// Gen3Workflow per-user SA supplied via _WORKER_SA tag). If so, skip SA
-	// deletion — the SA is shared across tasks and must not be torn down here.
-	externalSA := false
-	if b.database != nil {
-		if task, err := b.database.GetTask(ctx, &tes.GetTaskRequest{Id: taskId, View: tes.View_FULL.String()}); err == nil {
-			if saName, exists := task.Tags["_WORKER_SA"]; exists && saName != "" {
-				externalSA = true
-			}
-		}
-	}
-
 	// Delete Job
 	b.log.Debug("deleting Job", "taskID", taskId)
 	err := resources.DeleteJob(ctx, b.conf, taskId, b.client, b.log)
@@ -317,11 +305,22 @@ func (b *Backend) cleanResources(ctx context.Context, taskId string) error {
 		b.log.Error("deleting Job", "error", err)
 	}
 
-	// Delete ServiceAccount
-	err = resources.DeleteServiceAccount(ctx, taskId, b.conf.Kubernetes.JobsNamespace, b.client, b.log, externalSA)
-	if err != nil {
+	// Determine the ServiceAccount for this task.
+	// Default to the conventional task-scoped name; override if the task
+	// specifies an externally-managed SA via the _WORKER_SA tag.
+	saOpts := &resources.DeleteServiceAccountOptions{}
+	if b.database != nil {
+		if task, err := b.database.GetTask(ctx, &tes.GetTaskRequest{Id: taskId, View: tes.View_FULL.String()}); err == nil {
+			if workerSA := task.Tags["_WORKER_SA"]; workerSA != "" {
+				saOpts.ServiceAccountName = workerSA
+				saOpts.ExternalSA = true
+			}
+		}
+	}
+
+	if err := resources.DeleteServiceAccount(ctx, taskId, b.conf.Kubernetes.JobsNamespace, b.client, b.log, saOpts); err != nil {
 		errs = multierror.Append(errs, err)
-		b.log.Error("deleting Worker ServiceAccount", "error", err)
+		b.log.Error("deleting Worker ServiceAccount", "taskID", taskId, "error", err)
 	}
 
 	// Delete Role
@@ -427,6 +426,8 @@ func (b *Backend) reconcile(ctx context.Context, rate time.Duration, disableClea
 				}
 			}
 		}
+		b.CleanOrphanedResources(ctx)
+
 	}
 
 	ticker := time.NewTicker(rate)
@@ -581,7 +582,6 @@ func (b *Backend) reconcile(ctx context.Context, rate time.Duration, disableClea
 					delete(failedJobEvents, taskID)
 				}
 			}
-			b.CleanOrphanedResources(ctx)
 		}
 	}
 }

@@ -250,6 +250,11 @@ func TestDeletePV(t *testing.T) {
 	pv := &corev1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "funnel-worker-pv-" + testTaskID,
+			Labels: map[string]string{
+				"app":       "funnel",
+				"taskId":    testTaskID,
+				"namespace": jobsNamespace,
+			},
 		},
 	}
 	_, err := fakeClient.CoreV1().PersistentVolumes().Create(context.Background(), pv, metav1.CreateOptions{})
@@ -381,7 +386,7 @@ func TestDeleteServiceAccount(t *testing.T) {
 		t.Fatalf("Failed to create test ServiceAccount: %v", err)
 	}
 
-	err = DeleteServiceAccount(context.Background(), testTaskID, namespace, fakeClient, l, false)
+	err = DeleteServiceAccount(context.Background(), testTaskID, namespace, fakeClient, l, nil)
 	if err != nil {
 		t.Errorf("DeleteServiceAccount failed: %v", err)
 	}
@@ -419,7 +424,7 @@ func TestDeleteServiceAccountInUse(t *testing.T) {
 		t.Fatalf("Failed to create test Pod: %v", err)
 	}
 
-	err = DeleteServiceAccount(context.Background(), testTaskID, namespace, fakeClient, l, false)
+	err = DeleteServiceAccount(context.Background(), testTaskID, namespace, fakeClient, l, nil)
 	if err != nil {
 		t.Fatalf("expected DeleteServiceAccount to succeed (skip) when ServiceAccount is in use, got error: %v", err)
 	}
