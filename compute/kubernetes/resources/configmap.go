@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"text/template"
 
 	"github.com/ohsu-comp-bio/funnel/config"
@@ -22,7 +23,15 @@ import (
 // that mount a static shared ConfigMap (e.g. "funnel-config") via the
 // WorkerTemplate volume spec should leave ConfigMapTemplate empty.
 func CreateConfigMap(ctx context.Context, taskId string, conf *config.Config, client kubernetes.Interface, log *logger.Logger, ownerRef *metav1.OwnerReference) error {
-	t, err := template.New(taskId).Parse(conf.Kubernetes.ConfigMapTemplate)
+	funcMap := template.FuncMap{
+		"indent": func(spaces int, s string) string {
+			pad := strings.Repeat(" ", spaces)
+			return pad + strings.ReplaceAll(s, "\n", "\n"+pad)
+		},
+	}
+
+	t, err := template.New(taskId).Funcs(funcMap).Parse(conf.Kubernetes.ConfigMapTemplate)
+
 	if err != nil {
 		return fmt.Errorf("parsing ConfigMapTemplate: %v", err)
 	}
