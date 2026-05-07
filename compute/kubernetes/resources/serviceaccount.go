@@ -79,7 +79,13 @@ func isServiceAccountAttachedToPods(ctx context.Context, saName, namespace strin
 	if err != nil {
 		return false, fmt.Errorf("listing pods using ServiceAccount %s: %v", saName, err)
 	}
-	return len(pods.Items) > 0, nil
+	activePods := make([]corev1.Pod, 0, len(pods.Items))
+	for _, pod := range pods.Items {
+		if pod.DeletionTimestamp == nil {
+			activePods = append(activePods, pod)
+		}
+	}
+	return len(activePods) > 0, nil
 }
 
 // DeleteServiceAccount deletes the ServiceAccount created for a task.
