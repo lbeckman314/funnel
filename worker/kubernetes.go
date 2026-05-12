@@ -72,6 +72,24 @@ func (e *K8sSystemErr) Unwrap() error {
 	return e.Err
 }
 
+// normalizeShellCommand ensures a single-element command string is safe to
+// pass to /bin/sh -c. If the string is already valid shell syntax it is
+// returned unchanged. If the parser rejects it (e.g. an unterminated single
+// quote in "echo Hello O'hare!"), each whitespace-separated token is wrapped
+// in single quotes with any internal single quotes escaped, preserving the
+// original word boundaries.
+func normalizeShellCommand(s string) string {
+	if _, err := syntax.NewParser().Parse(strings.NewReader(s), ""); err == nil {
+		return s
+	}
+	tokens := strings.Fields(s)
+	for i, tok := range tokens {
+		escaped := strings.ReplaceAll(tok, "'", "'\\''")
+		tokens[i] = "'" + escaped + "'"
+	}
+	return strings.Join(tokens, " ")
+}
+
 // Create the Executor K8s job from kubernetes-executor-template.yaml
 // Funnel Worker job is created in compute/kubernetes/backend.go#CreateResources
 func (kcmd KubernetesCommand) Run(ctx context.Context) error {
@@ -113,12 +131,10 @@ func (kcmd KubernetesCommand) Run(ctx context.Context) error {
 		cmd = []string{shellCmd}
 	}
 
-	// Validate single-element shell scripts before passing them to /bin/sh -c.
+	// Normalize single-element shell scripts before passing them to /bin/sh -c.
 	// Multi-element commands are exec'd directly and bypass the shell entirely.
 	if len(cmd) == 1 && !hasRedirects {
-		if err := validateShellSyntax(cmd[0]); err != nil {
-			return err
-		}
+		cmd[0] = normalizeShellCommand(cmd[0])
 	}
 
 	// Use a shell wrapper when the command is a single element (a shell script
@@ -452,14 +468,4 @@ func getKubernetesClientset() (*kubernetes.Clientset, error) {
 
 	clientset, err := kubernetes.NewForConfig(kubeconfig)
 	return clientset, err
-}
-
-// validateShellSyntax returns an error if s is not valid POSIX shell syntax.
-// Used to catch issues like unterminated quotes before passing single-element
-// commands to /bin/sh -c. Multi-element commands bypass the shell entirely.
-func validateShellSyntax(s string) error {
-	if _, err := syntax.NewParser().Parse(strings.NewReader(s), ""); err != nil {
-		return fmt.Errorf("single-element command is not valid shell syntax (consider using a multi-element command array instead): %w", err)
-	}
-	return nil
 }
